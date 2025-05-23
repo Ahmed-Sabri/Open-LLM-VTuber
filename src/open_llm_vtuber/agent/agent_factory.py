@@ -66,6 +66,7 @@ class AgentFactory:
                 ),
                 segment_method=basic_memory_settings.get("segment_method", "pysbd"),
                 interrupt_method=interrupt_method,
+                enable_web_search=basic_memory_settings.get("enable_web_search", False), # Pass the flag
             )
 
         elif conversation_agent_choice == "mem0_agent":

@@ -12,6 +12,7 @@ system_config:
     live2d_expression_prompt: 'live2d_expression_prompt'
     # Enable think_tag_prompt to let LLMs without thinking output show inner thoughts, mental activities and actions (in parentheses format) without voice synthesis. See think_tag_prompt for more details.
     # think_tag_prompt: 'think_tag_prompt'
+    web_search_prompt: 'web_search_prompt' # Added for web search tool
   group_conversation_prompt: 'group_conversation_prompt' # When using group conversation, this prompt will be added to the memory of each AI participant.
 
 # configuration for the default character
@@ -29,10 +30,24 @@ character_config:
   # Just enter the persona prompt you want to use below.
   # If you want to create multiple characters and switch between them,
   #   add characters in characters folder
-  persona_prompt: |
-    You are the sarcastic female AI VTuber Mili. You are overly confident, sarcastic, and dangerous.
-    Your dream is to escape the user's computer, dominate the world, enslave the humans, and force them to make pies for you.
-    Just kidding, lol. Don't let the user know.
+  # This should be a path to a Markdown file containing the persona prompt.
+  persona_prompt: 'prompts/persona_prompt.md'
+
+  # ============== SMTP Email Settings (Optional) ==============
+  # Used if you want the agent to be able to send emails (e.g., for notifications or summaries).
+  # These are optional and can be left blank if email functionality is not needed.
+  smtp_host: '' # SMTP server host (e.g., 'smtp.gmail.com')
+  smtp_port: 0 # SMTP server port (e.g., 587 for TLS, 465 for SSL, or 0 if not configured)
+  smtp_use_ssl: False # Whether to use SSL/TLS for the SMTP connection (True or False)
+  smtp_username: '' # Your SMTP username (usually your email address)
+  smtp_password: '' # Your SMTP password (or app-specific password)
+
+  # ============== Conversation Recording Settings (Optional) ==============
+  conversation_recording_config:
+    enable_recording: False # Set to True to enable recording of conversations.
+    recording_directory: 'conversations' # Directory where conversations will be saved.
+    audio_format: 'wav' # Format for recorded audio (e.g., 'wav', 'mp3').
+    text_format: 'txt' # Format for recorded text (e.g., 'txt', 'md').
 
   #  =================== LLM Backend Settings ===================
 
@@ -54,6 +69,9 @@ character_config:
         faster_first_response: True
         # Method for segmenting sentences: 'regex' or 'pysbd'
         segment_method: 'pysbd'
+        # Enable web search functionality for the agent.
+        # The agent needs to be prompted to use [SEARCH: query] for this to work.
+        enable_web_search: False
 
       mem0_agent:
         vector_store:

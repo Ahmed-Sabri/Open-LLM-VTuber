@@ -30,6 +30,7 @@ from .config_manager import (
     read_yaml,
     validate_config,
 )
+from .email_sender import EmailSender
 
 
 class ServiceContext:
@@ -41,6 +42,7 @@ class ServiceContext:
         self.system_config: SystemConfig = None
         self.character_config: CharacterConfig = None
 
+        self.email_sender: EmailSender | None = None
         self.live2d_model: Live2dModel = None
         self.asr_engine: ASRInterface = None
         self.tts_engine: TTSInterface = None
@@ -151,6 +153,28 @@ class ServiceContext:
         self.config = config
         self.system_config = config.system_config or self.system_config
         self.character_config = config.character_config
+
+        # Initialize EmailSender
+        if self.character_config and self.character_config.smtp_host:
+            try:
+                self.email_sender = EmailSender(
+                    host=self.character_config.smtp_host,
+                    port=self.character_config.smtp_port,
+                    use_ssl=self.character_config.smtp_use_ssl,
+                    username=self.character_config.smtp_username,
+                    password=self.character_config.smtp_password,
+                )
+                logger.info(
+                    f"EmailSender initialized for host {self.character_config.smtp_host}:{self.character_config.smtp_port}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize EmailSender: {e}")
+                self.email_sender = None
+        else:
+            self.email_sender = None
+            logger.info(
+                "EmailSender not initialized because smtp_host is not configured."
+            )
 
     def init_live2d(self, live2d_model_name: str) -> None:
         logger.info(f"Initializing Live2D: {live2d_model_name}")

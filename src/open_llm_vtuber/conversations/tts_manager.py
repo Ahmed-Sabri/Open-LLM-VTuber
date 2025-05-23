@@ -35,9 +35,10 @@ class TTSTaskManager:
         live2d_model: Live2dModel,
         tts_engine: TTSInterface,
         websocket_send: WebSocketSend,
-    ) -> None:
+    ) -> Optional[asyncio.Task]:
         """
         Queue a TTS task while maintaining order of delivery.
+        Returns the asyncio.Task that processes the TTS, which will yield the audio_file_path upon completion.
 
         Args:
             tts_text: Text to synthesize
@@ -60,7 +61,7 @@ class TTSTaskManager:
                 )
 
             await self._send_silent_payload(display_text, actions, current_sequence)
-            return
+            return None # No task created for silent payload
 
         logger.debug(
             f"🏃Queuing TTS task for: '''{tts_text}''' (by {display_text.name})"
@@ -88,6 +89,7 @@ class TTSTaskManager:
             )
         )
         self.task_list.append(task)
+        return task # Return the created task
 
     async def _process_payload_queue(self, websocket_send: WebSocketSend) -> None:
         """
@@ -135,8 +137,8 @@ class TTSTaskManager:
         live2d_model: Live2dModel,
         tts_engine: TTSInterface,
         sequence_number: int,
-    ) -> None:
-        """Process TTS generation and queue the result for ordered delivery"""
+    ) -> Optional[str]:
+        """Process TTS generation, queue the result for ordered delivery, and return the audio file path."""
         audio_file_path = None
         try:
             audio_file_path = await self._generate_audio(tts_engine, tts_text)
@@ -160,8 +162,11 @@ class TTSTaskManager:
 
         finally:
             if audio_file_path:
-                tts_engine.remove_file(audio_file_path)
-                logger.debug("Audio cache file cleaned.")
+                # We don't remove the file here anymore, caller is responsible if they need to.
+                # tts_engine.remove_file(audio_file_path) 
+                # logger.debug("Audio cache file cleaned by _process_tts.")
+                pass # Path will be returned
+        return audio_file_path
 
     async def _generate_audio(self, tts_engine: TTSInterface, text: str) -> str:
         """Generate audio file from text"""

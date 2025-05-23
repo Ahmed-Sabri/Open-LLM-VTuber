@@ -17,6 +17,8 @@ from .types import WebSocketSend
 from .tts_manager import TTSTaskManager
 from ..chat_history_manager import store_message
 from ..service_context import ServiceContext
+from .recording_utils import save_conversation_message # Added for recording
+from datetime import datetime # Added for timestamping recordings
 
 
 async def process_single_conversation(
@@ -42,6 +44,8 @@ async def process_single_conversation(
     """
     # Create TTSTaskManager for this conversation
     tts_manager = TTSTaskManager()
+    recording_config = context.character_config.conversation_recording_config
+    session_id_for_recording = context.history_uid # Use history_uid as session_id
 
     try:
         # Send initial signals
@@ -53,6 +57,18 @@ async def process_single_conversation(
             user_input, context.asr_engine, websocket_send
         )
 
+        # --- Save User Text ---
+        if recording_config.enable_recording and session_id_for_recording:
+            save_conversation_message(
+                recording_config=recording_config,
+                character_name_or_human=context.character_config.human_name, # Could be 'Human' or a configured name
+                session_id=session_id_for_recording,
+                message_type="user",
+                text_content=input_text,
+                timestamp=datetime.now()
+            )
+        # --- End Save User Text ---
+
         # Create batch input
         batch_input = create_batch_input(
             input_text=input_text,
@@ -61,7 +77,7 @@ async def process_single_conversation(
         )
 
         # Store user message
-        if context.history_uid:
+        if context.history_uid: # This is the same as session_id_for_recording
             store_message(
                 conf_uid=context.character_config.conf_uid,
                 history_uid=context.history_uid,
@@ -79,6 +95,7 @@ async def process_single_conversation(
             batch_input=batch_input,
             websocket_send=websocket_send,
             tts_manager=tts_manager,
+            session_id=session_id_for_recording, # Pass session_id for recording AI audio
         )
 
         # Wait for any pending TTS tasks
@@ -92,7 +109,7 @@ async def process_single_conversation(
             client_uid=client_uid,
         )
 
-        if context.history_uid and full_response:
+        if context.history_uid and full_response: # context.history_uid is session_id_for_recording
             store_message(
                 conf_uid=context.character_config.conf_uid,
                 history_uid=context.history_uid,
@@ -103,6 +120,18 @@ async def process_single_conversation(
             )
             logger.info(f"AI response: {full_response}")
 
+            # --- Save AI Text ---
+            if recording_config.enable_recording and session_id_for_recording:
+                save_conversation_message(
+                    recording_config=recording_config,
+                    character_name_or_human=context.character_config.character_name,
+                    session_id=session_id_for_recording,
+                    message_type="ai",
+                    text_content=full_response, # Save the full aggregated text
+                    timestamp=datetime.now() 
+                    # Audio for AI is saved segment by segment in conversation_utils.py/handle_sentence_output
+                )
+            # --- End Save AI Text ---
         return full_response
 
     except asyncio.CancelledError:
@@ -123,6 +152,7 @@ async def process_agent_response(
     batch_input: Any,
     websocket_send: WebSocketSend,
     tts_manager: TTSTaskManager,
+    session_id: Optional[str] = None, # Added session_id for recording
 ) -> str:
     """Process agent response and generate output
 
@@ -147,6 +177,7 @@ async def process_agent_response(
                 websocket_send=websocket_send,
                 tts_manager=tts_manager,
                 translate_engine=context.translate_engine,
+                session_id=session_id, # Pass session_id for recording AI audio
             )
             full_response += response_part
 

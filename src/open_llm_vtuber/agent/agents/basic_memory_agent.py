@@ -3,8 +3,10 @@ from loguru import logger
 
 from .agent_interface import AgentInterface
 from ..output_types import SentenceOutput, DisplayText
+import re # For parsing search command
 from ..stateless_llm.stateless_llm_interface import StatelessLLMInterface
 from ...chat_history_manager import get_history
+from ..tools.web_search_tool import search_web # Import the search tool
 from ..transformers import (
     sentence_divider,
     actions_extractor,
@@ -37,6 +39,7 @@ class BasicMemoryAgent(AgentInterface):
         faster_first_response: bool = True,
         segment_method: str = "pysbd",
         interrupt_method: Literal["system", "user"] = "user",
+        enable_web_search: bool = False, # Added enable_web_search
     ):
         """
         Initialize the agent with LLM, system prompt and configuration
@@ -59,6 +62,7 @@ class BasicMemoryAgent(AgentInterface):
         self._faster_first_response = faster_first_response
         self._segment_method = segment_method
         self.interrupt_method = interrupt_method
+        self._enable_web_search = enable_web_search # Store the flag
         # Flag to ensure a single interrupt handling per conversation
         self._interrupt_handled = False
         self._set_llm(llm)
@@ -255,7 +259,8 @@ class BasicMemoryAgent(AgentInterface):
         )
         async def chat_with_memory(input_data: BatchInput) -> AsyncIterator[str]:
             """
-            Chat implementation with memory and processing pipeline
+            Chat implementation with memory and processing pipeline.
+            Includes logic for web search if enabled and triggered by the LLM.
 
             Args:
                 input_data: BatchInput
@@ -264,17 +269,99 @@ class BasicMemoryAgent(AgentInterface):
                 AsyncIterator[str] - Token stream from LLM
             """
 
-            messages = self._to_messages(input_data)
+            messages = self._to_messages(input_data) # This also adds the user message to self._memory
 
-            # Get token stream from LLM
-            token_stream = chat_func(messages, self._system)
-            complete_response = ""
+            MAX_SEARCH_ITERATIONS = 2 # Prevent infinite search loops
+            current_search_iteration = 0
+            
+            while current_search_iteration < MAX_SEARCH_ITERATIONS:
+                current_search_iteration += 1
+                
+                # Get token stream from LLM
+                token_stream = chat_func(messages, self._system)
+                complete_response = ""
 
-            async for token in token_stream:
-                yield token
-                complete_response += token
+                # Accumulate the full response from the LLM first
+                # The decorators expect to process the full response for things like sentence division
+                raw_llm_output_for_search_check = ""
+                async for token in token_stream:
+                    raw_llm_output_for_search_check += token
+                
+                # Check for search command
+                search_match = None
+                if self._enable_web_search:
+                    search_match = re.search(r"\[SEARCH:\s*(.*?)\]", raw_llm_output_for_search_check)
 
-            # Store complete response
+                if search_match:
+                    search_query = search_match.group(1).strip()
+                    logger.info(f"LLM requested search: '{search_query}'")
+                    
+                    # Remove the [SEARCH: query] part from the raw output before yielding
+                    # and before potentially showing it to the user if search fails
+                    # However, the current pipeline yields tokens directly.
+                    # This means the [SEARCH:] tag might be visible briefly.
+                    # For a cleaner approach, we might need to buffer the output if a search tag is found,
+                    # perform search, then regenerate response.
+                    # For now, we'll proceed with the search and then feed results for a new LLM call.
+
+                    # Inform user/system that search is happening (optional, could be a yield)
+                    # yield f"[Performing search for: {search_query}]" # This would need to fit SentenceOutput
+
+                    search_results_str = search_web(search_query, num_results=3)
+                    logger.info(f"Search results for '{search_query}':\n{search_results_str}")
+
+                    # Prepare new context for the LLM
+                    # The original user message is already in self._memory
+                    # The LLM's message that contained [SEARCH:] should NOT be added to memory.
+                    # Instead, we add a system message with search results.
+                    
+                    # Remove the user message that triggered the LLM to search if it's the last one
+                    # The self._to_messages call adds the user message.
+                    # The LLM's response (raw_llm_output_for_search_check) is not yet in memory.
+
+                    search_context_message = (
+                        f"Web search for query '{search_query}' yielded the following results:\n"
+                        f"{search_results_str}\n"
+                        "Please use these results to answer the user's request."
+                    )
+                    
+                    # Add this as a new "user" turn to guide the LLM.
+                    # Or, potentially, re-run with a modified system prompt or insert into messages.
+                    # For simplicity, let's append it as a new user message to guide the next turn.
+                    # This means the original user query is in memory, then the LLM's search command (which we intercept),
+                    # then we inject search results as if the user provided them.
+                    
+                    # We need to reconstruct `messages` for the next LLM call.
+                    # The `self._memory` already contains the original user query.
+                    # We should not add raw_llm_output_for_search_check to memory.
+                    messages.append({"role": "assistant", "content": raw_llm_output_for_search_check}) # Add LLM's attempt
+                    messages.append({"role": "user", "content": search_context_message}) # Add search results as user guidance
+                    
+                    # Loop back to call chat_func again with the new messages list
+                    # The original user input is still in self._memory from the first _to_messages call
+                    # We add the LLM's attempt (with search tag) and our search results to messages for the next LLM call
+                    # We don't add the LLM's attempt or our search results to self._memory here,
+                    # as the next iteration's complete_response will be the one stored.
+                    logger.info("Feeding search results back to LLM.")
+                    continue # Go to the next iteration of the while loop for a new LLM call
+                
+                else:
+                    # No search command, or search disabled, or max iterations reached.
+                    # This is the final response. Yield it token by token.
+                    # The `raw_llm_output_for_search_check` contains the full response here.
+                    # We need to yield it in a way the decorators can process.
+                    # The original design yields token by token from chat_func.
+                    # We have already consumed the token_stream to build raw_llm_output_for_search_check.
+                    # This requires a slight refactor in how tokens are yielded if we pre-buffer.
+
+                    # For now, let's simulate the stream yield for the decorators.
+                    # This ensures the decorators see the tokens as they would have.
+                    for char_token in raw_llm_output_for_search_check:
+                        yield char_token
+                    complete_response = raw_llm_output_for_search_check
+                    break # Exit search loop
+
+            # Store final complete response (after potential search)
             self._add_message(complete_response, "assistant")
 
         return chat_with_memory

@@ -34,6 +34,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "uvicorn[standard]>=0.33.0",
     "websocket-client>=1.8.0",
+    "duckduckgo-search>=6.1.8", # Added duckduckgo-search
 ]
 
 [tool.pixi.project]
@@ -42,6 +43,7 @@ platforms = ["win-64", "linux-64"]
 
 [tool.pixi.pypi-dependencies]
 open-llm-vtuber = { path = ".", editable = true }
+duckduckgo-search = ">=6.1.8" # Added here as well
 
 [tool.pixi.dependencies]
 cudnn = ">=8.0,<9"

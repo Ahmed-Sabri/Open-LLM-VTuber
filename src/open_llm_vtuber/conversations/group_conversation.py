@@ -22,6 +22,8 @@ from .types import (
 from ..service_context import ServiceContext
 from ..chat_history_manager import store_message
 from .tts_manager import TTSTaskManager
+from .recording_utils import save_conversation_message # Added for recording
+from datetime import datetime # Added for timestamping recordings
 
 
 async def process_group_conversation(
@@ -48,6 +50,15 @@ async def process_group_conversation(
     """
     # Create TTSTaskManager for each member
     tts_managers = {uid: TTSTaskManager() for uid in group_members}
+    # Get recording_config from the initiator's context (assuming it's consistent for the group)
+    # This might need refinement if group members can have different recording configs.
+    initiator_ctx_for_config = client_contexts.get(initiator_client_uid)
+    recording_config = None
+    if initiator_ctx_for_config:
+        recording_config = initiator_ctx_for_config.character_config.conversation_recording_config
+    else:
+        logger.warning("Could not get initiator context for recording config in group chat.")
+
 
     try:
         logger.info(f"Group Conversation Chain {session_emoji} started!")
@@ -83,6 +94,18 @@ async def process_group_conversation(
             initiator_client_uid=initiator_client_uid,
         )
 
+        # --- Save Initial User Text for Group ---
+        if recording_config and recording_config.enable_recording and state.group_id:
+            save_conversation_message(
+                recording_config=recording_config,
+                character_name_or_human=human_name, # The human initiator
+                session_id=state.group_id,
+                message_type="user",
+                text_content=input_text,
+                timestamp=datetime.now()
+            )
+        # --- End Save Initial User Text ---
+
         for member_uid in group_members:
             member_context = client_contexts[member_uid]
             store_message(
@@ -108,6 +131,8 @@ async def process_group_conversation(
                     group_members=group_members,
                     images=images,
                     tts_manager=tts_managers[current_member_uid],
+                    # Pass recording_config for AI text saving, AI audio is handled deeper
+                    recording_config=recording_config 
                 )
             except Exception as e:
                 logger.error(f"Error in group member turn: {e}")
@@ -213,6 +238,7 @@ async def handle_group_member_turn(
     group_members: List[str],
     images: Optional[List[Dict[str, Any]]],
     tts_manager: TTSTaskManager,
+    recording_config: Optional[Any] = None, # Added recording_config
 ) -> None:
     """Handle a single group member's conversation turn"""
     # Update current speaker before processing
@@ -240,6 +266,7 @@ async def handle_group_member_turn(
         batch_input=batch_input,
         current_ws_send=current_ws_send,
         tts_manager=tts_manager,
+        session_id=state.group_id, # Pass group_id as session_id for AI audio recording
     )
 
     if tts_manager.task_list:
@@ -263,6 +290,20 @@ async def handle_group_member_turn(
         ai_message = f"{context.character_config.character_name}: {full_response}"
         state.conversation_history.append(ai_message)
         logger.info(f"Appended complete response: {ai_message}")
+
+        # --- Save AI Text for Group Member ---
+        if recording_config and recording_config.enable_recording and state.group_id:
+            save_conversation_message(
+                recording_config=recording_config,
+                character_name_or_human=context.character_config.character_name, # The AI member speaking
+                session_id=state.group_id,
+                message_type="ai",
+                text_content=full_response, # Full aggregated text for this AI's turn
+                timestamp=datetime.now()
+                # Audio for AI is saved segment by segment in conversation_utils.py/handle_sentence_output
+            )
+        # --- End Save AI Text ---
+
 
         for member_uid in group_members:
             member_context = client_contexts[member_uid]
@@ -316,6 +357,7 @@ async def process_member_response(
     batch_input: Any,
     current_ws_send: WebSocketSend,
     tts_manager: TTSTaskManager,
+    session_id: Optional[str] = None, # Added session_id for recording
 ) -> str:
     """Process group member's response"""
     full_response = ""
@@ -332,6 +374,7 @@ async def process_member_response(
                 websocket_send=current_ws_send,
                 tts_manager=tts_manager,
                 translate_engine=context.translate_engine,
+                session_id=session_id, # Pass session_id for AI audio recording
             )
             full_response += response_part
 

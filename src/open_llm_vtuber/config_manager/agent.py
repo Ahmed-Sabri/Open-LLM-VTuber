@@ -29,6 +29,7 @@ class BasicMemoryAgentConfig(I18nMixin, BaseModel):
 
     faster_first_response: Optional[bool] = Field(True, alias="faster_first_response")
     segment_method: Literal["regex", "pysbd"] = Field("pysbd", alias="segment_method")
+    enable_web_search: bool = Field(default=False, alias="enable_web_search") # Added web search flag
     DESCRIPTIONS: ClassVar[Dict[str, Description]] = {
         "llm_provider": Description(
             en="LLM provider to use for this agent",
@@ -41,6 +42,10 @@ class BasicMemoryAgentConfig(I18nMixin, BaseModel):
         "segment_method": Description(
             en="Method for segmenting sentences: 'regex' or 'pysbd' (default: 'pysbd')",
             zh="分割句子的方法：'regex' 或 'pysbd'（默认：'pysbd'）",
+        ),
+        "enable_web_search": Description(
+            en="Enable web search functionality for the agent (default: False)",
+            zh="为代理启用网络搜索功能（默认：False）",
         ),
     }
 

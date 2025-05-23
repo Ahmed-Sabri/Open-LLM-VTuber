@@ -8,12 +8,14 @@ from loguru import logger
 from ..message_handler import message_handler
 from .types import WebSocketSend, BroadcastContext
 from .tts_manager import TTSTaskManager
-from ..agent.output_types import SentenceOutput, AudioOutput
+from ..agent.output_types import SentenceOutput, AudioOutput, Actions # Added Actions
 from ..agent.input_types import BatchInput, TextData, ImageData, TextSource, ImageSource
 from ..asr.asr_interface import ASRInterface
 from ..live2d_model import Live2dModel
 from ..tts.tts_interface import TTSInterface
+from ..config_manager.character import CharacterConfig # Added CharacterConfig
 from ..utils.stream_audio import prepare_audio_payload
+from .recording_utils import save_conversation_message # Added for recording
 
 
 # Convert class methods to standalone functions
@@ -42,30 +44,57 @@ def create_batch_input(
 
 async def process_agent_output(
     output: Union[AudioOutput, SentenceOutput],
-    character_config: Any,
+    character_config: CharacterConfig, # Changed type hint
     live2d_model: Live2dModel,
     tts_engine: TTSInterface,
     websocket_send: WebSocketSend,
     tts_manager: TTSTaskManager,
     translate_engine: Optional[Any] = None,
+    session_id: Optional[str] = None, # Added session_id for recording
 ) -> str:
     """Process agent output with character information and optional translation"""
-    output.display_text.name = character_config.character_name
-    output.display_text.avatar = character_config.avatar
+    # Ensure display_text has necessary attributes if they are missing
+    if not hasattr(output, 'display_text') or output.display_text is None:
+        # Create a default DisplayText if missing. This might happen if output is simpler.
+        # However, SentenceOutput and AudioOutput are expected to have it.
+        # This is a safeguard.
+        from ..agent.output_types import DisplayText as DefaultDisplayText
+        output.display_text = DefaultDisplayText(text="")
+
+    if output.display_text: # Ensure display_text is not None
+        output.display_text.name = character_config.character_name
+        output.display_text.avatar = character_config.avatar
 
     full_response = ""
     try:
         if isinstance(output, SentenceOutput):
             full_response = await handle_sentence_output(
-                output,
-                live2d_model,
-                tts_engine,
-                websocket_send,
-                tts_manager,
-                translate_engine,
+                output=output,
+                character_config=character_config, # Pass character_config
+                live2d_model=live2d_model,
+                tts_engine=tts_engine,
+                websocket_send=websocket_send,
+                tts_manager=tts_manager,
+                translate_engine=translate_engine,
+                session_id=session_id, # Pass session_id
             )
         elif isinstance(output, AudioOutput):
+            # Note: AudioOutput directly provides audio_path.
+            # Recording for AudioOutput type needs to be handled here if desired.
+            # For now, focusing on SentenceOutput as per typical flow.
             full_response = await handle_audio_output(output, websocket_send)
+            if character_config.conversation_recording_config.enable_recording and session_id:
+                async for audio_path, display_text, transcript, actions_obj in output:
+                    if audio_path: # audio_path is the first element yielded
+                        save_conversation_message(
+                            recording_config=character_config.conversation_recording_config,
+                            character_name_or_human=character_config.character_name,
+                            session_id=session_id,
+                            message_type="ai",
+                            audio_content_or_path=audio_path,
+                            # Text for AudioOutput (transcript) is part of full_response, saved later
+                        )
+
         else:
             logger.warning(f"Unknown output type: {type(output)}")
     except Exception as e:
@@ -81,15 +110,19 @@ async def process_agent_output(
 
 async def handle_sentence_output(
     output: SentenceOutput,
+    character_config: CharacterConfig, # Added character_config
     live2d_model: Live2dModel,
     tts_engine: TTSInterface,
     websocket_send: WebSocketSend,
     tts_manager: TTSTaskManager,
     translate_engine: Optional[Any] = None,
+    session_id: Optional[str] = None, # Added session_id
 ) -> str:
     """Handle sentence output type with optional translation support"""
     full_response = ""
-    async for display_text, tts_text, actions in output:
+    output_audio_path = None # Initialize
+
+    async for display_text, tts_text, actions_obj in output: # actions renamed to actions_obj
         logger.debug(f"🏃 Processing output: '''{tts_text}'''...")
 
         if translate_engine:
@@ -100,14 +133,48 @@ async def handle_sentence_output(
             logger.debug("🚫 No translation engine available. Skipping translation.")
 
         full_response += display_text.text
-        await tts_manager.speak(
+        
+        # Call speak and get the task
+        speak_task = await tts_manager.speak( # speak now returns a task
             tts_text=tts_text,
             display_text=display_text,
-            actions=actions,
+            actions=actions_obj, # Use renamed actions_obj
             live2d_model=live2d_model,
             tts_engine=tts_engine,
             websocket_send=websocket_send,
         )
+
+        if speak_task:
+            # Await the task to get the audio_file_path
+            try:
+                # Add a timeout to prevent indefinite blocking if a task hangs
+                output_audio_path = await asyncio.wait_for(speak_task, timeout=30.0) 
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout waiting for TTS task for text: {tts_text}")
+                output_audio_path = None
+            except Exception as e:
+                logger.error(f"Error awaiting TTS task: {e}")
+                output_audio_path = None
+
+            if output_audio_path and character_config.conversation_recording_config.enable_recording and session_id:
+                save_conversation_message(
+                    recording_config=character_config.conversation_recording_config,
+                    character_name_or_human=character_config.character_name,
+                    session_id=session_id,
+                    message_type="ai",
+                    audio_content_or_path=output_audio_path,
+                    # Text for SentenceOutput (full_response) is aggregated and saved one level up.
+                )
+                # Clean up the audio file after saving it for recording
+                # This assumes the TTS engine generated a temp file that should be removed.
+                if os.path.exists(output_audio_path):
+                    try:
+                        tts_engine.remove_file(output_audio_path)
+                        logger.debug(f"Cleaned up recorded audio file: {output_audio_path}")
+                    except Exception as e:
+                        logger.error(f"Error cleaning up recorded audio file {output_audio_path}: {e}")
+
+
     return full_response
 
 
